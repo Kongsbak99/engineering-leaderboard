@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/github",
+      "schedule": "*/15 8-18 * * 1-5"
+    },
+    {
+      "path": "/api/cron/linear",
+      "schedule": "*/15 8-18 * * 1-5"
+    },
+    {
+      "path": "/api/cron/scores",
+      "schedule": "0 */2 * * *"
+    }
+  ]
+}
