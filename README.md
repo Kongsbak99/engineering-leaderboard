@@ -1,4 +1,4 @@
-# askLio · Internal Pulse
+# Lio Pulse
 
 A single-page, dark-themed dashboard for the office TV. Combines **Linear**,
 **GitHub**, the **askLio production MongoDB**, and **Azure Blob Storage** (for
@@ -8,11 +8,121 @@ tenant logos) into three stacked sections:
    merged, average daily active users, new go-lives)
 2. **Rolling go-live banner** showing recent tenant module activations with
    company logos
-3. **Three tables side-by-side** — Project Momentum, Customer Usage, Agent
-   Usage
+3. **Four tables side-by-side** — Project Momentum, Customer Usage, AGENTS,
+   AOPs
+
+Every table also carries a **Trend** column: a green ▲ / red ▼ with the
+percent change of that row's primary metric between the rolling 7-day window
+and the prior 7-day window. A `★ new` badge appears when a row has activity
+this week but zero in the previous window.
 
 By design there are **no person-scoped views** — the dashboard surfaces only
 team-, project-, and customer-level signals.
+
+## The four tables
+
+All four bottom tables operate on a **rolling 7-day window** (now − 7d → now)
+and compute a WoW trend against the **prior 7-day window** (now − 14d → now − 7d).
+
+### 1. Project Momentum
+
+> Which initiatives have the most momentum behind them right now?
+
+**Columns:** `#` · `Project` · `Lio Score` · `Trend`
+
+**Source.** A daily rollup written by `/api/cron/scores` into `project_scores`.
+It joins data from four pipelines for each Linear project:
+
+| Component             | Weight | Inputs                                                  |
+| --------------------- | ------ | ------------------------------------------------------- |
+| `ticketVelocity`      | 20%    | Sum of completed Linear estimates                       |
+| `ticketThroughput`    | 15%    | Count of Linear issues moved to Done                    |
+| `cycleTimeEfficiency` | 15%    | Inverse of avg cycle time (faster = better)             |
+| `codeVolume`          | 10%    | Lines changed across merged GitHub PRs                  |
+| `prThroughput`        | 15%    | Count of merged GitHub PRs                              |
+| `adoption`            | 15%    | Tenant-level go-lives matching this project's mapping   |
+| `userTraction`        | 10%    | Δ in active users on mapped tenants vs prior window     |
+
+Each component is **min-max normalised across all scored projects** in the
+current run (so the project with the most PRs gets 100 for `prThroughput`,
+the slowest cycle time gets 0 for `cycleTimeEfficiency`, etc.), then combined
+into the `Lio Score` (0–100) using the weights above.
+
+**Trend.** Percent change of the Lio Score vs the most recent prior rollup
+for that project: `(today_score − previous_score) / previous_score × 100`.
+
+**Ranking.** Sorted by Lio Score descending; top 15 are shown.
+
+**Project mappings.** `adoption` and `userTraction` require a row in
+`project_mappings` connecting a Linear project to feature flags / integrations /
+tenant IDs. Without a mapping, those two components score 0 for that project.
+
+### 2. Customer Usage
+
+> Which tenants are getting the most real value out of askLio this week?
+
+**Columns:** `Customer` · `DAU` · `PRs` · `Trend`
+
+**Source.** Daily per-tenant aggregates in `usage_metrics`, populated by
+`/api/cron/usage-sync`. The cron reads each tenant's production MongoDB:
+- `DAU` = average of `activeUsers` across the 7-day window
+- `PRs` = sum of `purchaseRequests` across the 7-day window
+
+**Ranking.** Tenants are ranked by an **engagement score**:
+
+```
+engagement = √(DAU × PRs)
+```
+
+The geometric mean requires **both** dimensions to matter: 100 daily users
+that don't create any requests rank the same as 0 users (≈ 0); a tenant
+with 30 users creating 1,000 PRs ranks high. **Spend is deliberately
+ignored** here — it tracks contract size, not whether users are happy.
+
+**Trend.** WoW percent change of the engagement score.
+
+Top 15 tenants are shown.
+
+### 3. AGENTS
+
+> Which (agent, customer) pairs are the most active this week?
+
+**Columns:** `Agent` · `Customer` · `Runs` · `Trend`
+
+**Source.** The `agentRunsByName` map on `usage_metrics`, populated by
+`/api/cron/usage-sync` from per-tenant agent collections (`agent_runs`,
+`sourcing_agent_projects`, `negotiation_projects`, etc.). Test runs and
+runs without a `name` are filtered out.
+
+This table is restricted to **standardised user-triggered agents**:
+
+- `Sourcing Agent`
+- `Negotiation Agent`
+- `Order Confirmation Agent`
+- `Goods Receipt Agent`
+- `Contract Agent`
+- `Invoice Agent`
+
+Names are canonicalised so per-tenant naming variations collapse into the
+same row (`"Remote Approver"` and `"Remote-Approver"` → same canonical name).
+
+**Ranking.** Each row is a single `(agent, customer)` pair, sorted by `Runs`
+descending. Top 15 pairs are shown.
+
+**Trend.** WoW percent change in `Runs` for that exact `(agent, customer)`
+pair.
+
+### 4. AOPs
+
+> Which automated-on-PR agents are firing the most, and where?
+
+Identical shape and ranking as the AGENTS table, but covers everything
+**not** in the standardised list above. These agents (Remote Approver,
+PR Reviewer, etc.) trigger automatically on every purchase request, so
+their absolute run counts dwarf user-triggered agents — separating them
+keeps both tables readable.
+
+---
 
 ## Architecture
 
@@ -90,6 +200,30 @@ curl -H "Authorization: Bearer $TOKEN" "$BASE/linear" | jq
 curl -H "Authorization: Bearer $TOKEN" "$BASE/github" | jq
 curl -H "Authorization: Bearer $TOKEN" "$BASE/scores" | jq
 ```
+
+### Demo data
+
+For demos before enough historical data has accumulated, mock fixtures can
+be seeded directly into the dashboard's MongoDB. Every seeded document is
+tagged `mock: true` and lives only in the dashboard DB — production is
+**never** written to.
+
+```bash
+npm run mock:seed            # go-lives + prior project scores
+npm run mock:seed:momentum   # only the project-momentum priors
+npm run mock:clear           # remove everything tagged mock:true
+```
+
+- `mock:seed` inserts ~12 believable go-live events spread across the last
+  6 days plus a prior `project_scores` row for every currently-scored
+  project (so trend arrows show a believable mix of ▲ and ▼).
+- `mock:clear` deletes every `mock: true` document from `go_live_events`,
+  `usage_metrics`, `tenants`, `tenant_snapshots`, and `project_scores`.
+
+The mock momentum priors don't replace real data — they live at
+`date = today − 1` and are picked up by `getProjectMomentum`'s percent-trend
+computation. Re-running `mock:seed:momentum` is idempotent (existing
+`mock: true` rows are deleted first).
 
 ### Tenant discovery rules
 

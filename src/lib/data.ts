@@ -21,12 +21,33 @@ async function db() {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function windowsForRolling7d() {
+  return windowsForRollingNd(7);
+}
+
+function windowsForRollingNd(days: number) {
   const now = new Date();
   const currentEnd = now;
-  const currentStart = new Date(currentEnd.getTime() - 7 * DAY_MS);
+  const currentStart = new Date(currentEnd.getTime() - days * DAY_MS);
   const previousEnd = currentStart;
-  const previousStart = new Date(previousEnd.getTime() - 7 * DAY_MS);
+  const previousStart = new Date(previousEnd.getTime() - days * DAY_MS);
   return { currentStart, currentEnd, previousStart, previousEnd };
+}
+
+/**
+ * Compute a trend (% change current vs previous) with sane handling of the
+ * "no history" case. Returns `isNew: true` when current > 0 but previous was 0,
+ * so the UI can render "new" instead of an infinity.
+ */
+function computeTrend(current: number, previous: number): {
+  pct: number | null;
+  isNew: boolean;
+} {
+  if (previous === 0 && current === 0) return { pct: 0, isNew: false };
+  if (previous === 0) return { pct: null, isNew: true };
+  return {
+    pct: ((current - previous) / Math.abs(previous)) * 100,
+    isNew: false,
+  };
 }
 
 function dateKey(d: Date): string {
@@ -290,28 +311,19 @@ export async function getProjectMomentum(
         linearProjectId: "p-1",
         name: "Sourcing Agent v2",
         momentumScore: 92,
-        trend: 4,
-        ticketsCompleted: 18,
-        prsMerged: 24,
-        goLiveCount: 3,
+        trend: { pct: 8, isNew: false },
       },
       {
         linearProjectId: "p-2",
         name: "Goods Receipt Agent",
         momentumScore: 88,
-        trend: 2,
-        ticketsCompleted: 14,
-        prsMerged: 19,
-        goLiveCount: 2,
+        trend: { pct: 3, isNew: false },
       },
       {
         linearProjectId: "p-3",
         name: "Order Agent",
         momentumScore: 85,
-        trend: 0,
-        ticketsCompleted: 11,
-        prsMerged: 16,
-        goLiveCount: 1,
+        trend: { pct: -5, isNew: false },
       },
     ].slice(0, limit);
   }
@@ -335,21 +347,39 @@ export async function getProjectMomentum(
     .limit(limit)
     .toArray();
 
+  // Pull each project's prior score (closest date strictly earlier than the
+  // current rollup) so we can express trend as a percent change of the Lio
+  // Score itself, not the raw delta.
   const ids = scores.map((s) => s.linearProjectId);
+  const priorScores = await projectScoresCol(dashboard)
+    .find({ linearProjectId: { $in: ids }, date: { $lt: date } })
+    .sort({ date: -1 })
+    .toArray();
+  const priorByProject = new Map<string, number>();
+  for (const p of priorScores) {
+    if (!priorByProject.has(p.linearProjectId)) {
+      priorByProject.set(p.linearProjectId, p.momentumScore);
+    }
+  }
+
   const projects = await projectsCol(dashboard)
     .find({ linearProjectId: { $in: ids } })
     .toArray();
   const projectMap = new Map(projects.map((p) => [p.linearProjectId, p]));
 
-  return scores.map((s) => ({
-    linearProjectId: s.linearProjectId,
-    name: projectMap.get(s.linearProjectId)?.name ?? "Unknown",
-    momentumScore: s.momentumScore,
-    trend: s.trend,
-    ticketsCompleted: s.ticketsCompleted,
-    prsMerged: s.prsMerged,
-    goLiveCount: s.goLiveCount,
-  }));
+  return scores.map((s) => {
+    const previous = priorByProject.get(s.linearProjectId);
+    const trend =
+      previous === undefined
+        ? { pct: 0, isNew: false }
+        : computeTrend(s.momentumScore, previous);
+    return {
+      linearProjectId: s.linearProjectId,
+      name: projectMap.get(s.linearProjectId)?.name ?? "Unknown",
+      momentumScore: s.momentumScore,
+      trend,
+    };
+  });
 }
 
 export async function getCustomerUsage(limit = 12): Promise<CustomerUsageRow[]> {
@@ -360,27 +390,30 @@ export async function getCustomerUsage(limit = 12): Promise<CustomerUsageRow[]> 
         displayName: "Covestro",
         logoUrl: null,
         activeUsers: 142,
+        purchaseRequests: 318,
         totalSpend: 1_245_000,
         conversations: 982,
-        agentRuns: 318,
+        trend: { pct: 18, isNew: false },
       },
       {
         tenantId: "schaeffler",
         displayName: "Schaeffler",
         logoUrl: null,
         activeUsers: 98,
+        purchaseRequests: 211,
         totalSpend: 720_000,
         conversations: 654,
-        agentRuns: 211,
+        trend: { pct: -7, isNew: false },
       },
       {
         tenantId: "webasto",
         displayName: "Webasto",
         logoUrl: null,
         activeUsers: 76,
+        purchaseRequests: 144,
         totalSpend: 540_000,
         conversations: 421,
-        agentRuns: 144,
+        trend: { pct: 4, isNew: false },
       },
     ].slice(0, limit);
   }
@@ -390,84 +423,173 @@ export async function getCustomerUsage(limit = 12): Promise<CustomerUsageRow[]> 
     "@/lib/mongodb/collections"
   );
 
-  const { currentStart, currentEnd } = windowsForRolling7d();
+  const { currentStart, currentEnd, previousStart, previousEnd } =
+    windowsForRolling7d();
   const startKey = dateKey(currentStart);
   const endKey = dateKey(currentEnd);
+  const prevStartKey = dateKey(previousStart);
+  const prevEndKey = dateKey(previousEnd);
 
-  const agg = await usageMetricsCol(dashboard)
-    .aggregate<{
-      _id: string;
-      totalSpend: number;
-      conversations: number;
-      agentRuns: number;
-      avgActiveUsers: number;
-    }>([
-      {
-        $match: {
-          date: { $gte: startKey, $lt: endKey },
+  const aggFor = async (gte: string, lt: string) =>
+    usageMetricsCol(dashboard)
+      .aggregate<{
+        _id: string;
+        totalSpend: number;
+        conversations: number;
+        purchaseRequests: number;
+        avgActiveUsers: number;
+      }>([
+        { $match: { date: { $gte: gte, $lt: lt } } },
+        {
+          $group: {
+            _id: "$tenantId",
+            totalSpend: { $sum: "$totalSpend" },
+            conversations: { $sum: "$conversations" },
+            purchaseRequests: { $sum: "$purchaseRequests" },
+            avgActiveUsers: { $avg: "$activeUsers" },
+          },
         },
-      },
-      {
-        $group: {
-          _id: "$tenantId",
-          totalSpend: { $sum: "$totalSpend" },
-          conversations: { $sum: "$conversations" },
-          agentRuns: { $sum: "$agentRuns" },
-          avgActiveUsers: { $avg: "$activeUsers" },
-        },
-      },
-      { $sort: { agentRuns: -1, conversations: -1 } },
-      { $limit: limit },
-    ])
-    .toArray();
+      ])
+      .toArray();
+
+  const [agg, prevAgg] = await Promise.all([
+    aggFor(startKey, endKey),
+    aggFor(prevStartKey, prevEndKey),
+  ]);
 
   if (!agg.length) return [];
 
-  const tenantIds = agg.map((a) => a._id);
+  const prevMap = new Map<string, number>();
+  for (const p of prevAgg) {
+    const dau = Math.round(p.avgActiveUsers ?? 0);
+    const prs = p.purchaseRequests ?? 0;
+    prevMap.set(p._id, Math.sqrt(dau * prs));
+  }
+
+  // Rank by the geometric mean of DAU and PRs/week. This gives us a single
+  // "engagement" signal that requires *both* dimensions: 100 daily users who
+  // don't create any requests score the same as 0 users (~0), while a tenant
+  // with 30 users creating 1k PRs scores well. Spend is intentionally ignored
+  // - it tracks contract size, not how happy users are.
+  const ranked = agg
+    .map((a) => {
+      const dau = Math.round(a.avgActiveUsers ?? 0);
+      const prs = a.purchaseRequests ?? 0;
+      const engagement = Math.sqrt(dau * prs);
+      return {
+        tenantId: a._id,
+        dau,
+        prs,
+        conversations: a.conversations ?? 0,
+        totalSpend: Math.round(a.totalSpend ?? 0),
+        engagement,
+        trend: computeTrend(engagement, prevMap.get(a._id) ?? 0),
+      };
+    })
+    .sort((a, b) => {
+      if (b.engagement !== a.engagement) return b.engagement - a.engagement;
+      if (b.dau !== a.dau) return b.dau - a.dau;
+      return b.prs - a.prs;
+    })
+    .slice(0, limit);
+
+  const tenantIds = ranked.map((a) => a.tenantId);
   const tenants = await tenantsCol(dashboard)
     .find({ tenantId: { $in: tenantIds } })
     .toArray();
   const tenantMap = new Map(tenants.map((t) => [t.tenantId, t]));
 
-  return agg.map((a) => {
-    const t = tenantMap.get(a._id);
+  return ranked.map((a) => {
+    const t = tenantMap.get(a.tenantId);
     return {
-      tenantId: a._id,
-      displayName: t?.displayName ?? a._id,
+      tenantId: a.tenantId,
+      displayName: t?.displayName ?? a.tenantId,
       logoUrl: t?.logoUrl ?? null,
-      activeUsers: Math.round(a.avgActiveUsers ?? 0),
-      totalSpend: Math.round(a.totalSpend ?? 0),
+      activeUsers: a.dau,
+      purchaseRequests: a.prs,
+      totalSpend: a.totalSpend,
       conversations: a.conversations,
-      agentRuns: a.agentRuns,
+      trend: a.trend,
     };
   });
 }
 
-export async function getAgentUsage(limit = 15): Promise<AgentUsageRow[]> {
+// Some agents are configured per-tenant with slightly different names (e.g.
+// "Remote Approver" vs "Remote-Approver"). Canonicalize to make the global
+// agent leaderboard readable.
+const AGENT_NAME_CANONICAL: Record<string, string> = {
+  "remote-approver": "Remote Approver",
+  "remote approver": "Remote Approver",
+  "remote approver aop": "Remote Approver",
+};
+
+function canonicalAgentName(name: string): string {
+  const key = name.trim().toLowerCase();
+  return AGENT_NAME_CANONICAL[key] ?? name.trim();
+}
+
+// Standardized agents are explicitly invoked by users (or by deterministic
+// workflows tied to procurement intents). AOPs ("Auto-on-PR") fire
+// automatically on every PR, so their volume scales with PR throughput, not
+// with deliberate usage. We display them in separate tables.
+const STANDARDIZED_AGENT_NAMES = new Set([
+  "Sourcing Agent",
+  "Negotiation Agent",
+  "Order Confirmation Agent",
+  "Goods Receipt Agent",
+  "Contract Agent",
+  "Invoice Agent",
+]);
+
+export type AgentCategory = "standardized" | "aop";
+
+function categoryOf(agentName: string): AgentCategory {
+  return STANDARDIZED_AGENT_NAMES.has(agentName) ? "standardized" : "aop";
+}
+
+export async function getAgentUsage(
+  category: AgentCategory | "all" = "all",
+  limit = 15,
+  windowDays = 7
+): Promise<AgentUsageRow[]> {
   if (USE_MOCK) {
-    return [
+    const all: AgentUsageRow[] = [
       {
-        agentName: "Sourcing Agent v2",
+        agentName: "Negotiation Agent",
         tenantId: "covestro",
         displayName: "Covestro",
         logoUrl: null,
-        runs: 1021,
+        runs: 15,
+        trend: { pct: 25, isNew: false },
       },
       {
-        agentName: "Goods Receipt Agent",
-        tenantId: "schaeffler",
-        displayName: "Schaeffler",
+        agentName: "Sourcing Agent",
+        tenantId: "schott",
+        displayName: "Schott",
         logoUrl: null,
-        runs: 842,
+        runs: 13,
+        trend: { pct: 8, isNew: false },
       },
       {
-        agentName: "Order Agent",
-        tenantId: "webasto",
-        displayName: "Webasto",
+        agentName: "Remote Approver",
+        tenantId: "benteler",
+        displayName: "Benteler",
         logoUrl: null,
-        runs: 612,
+        runs: 1829,
+        trend: { pct: -4, isNew: false },
       },
-    ].slice(0, limit);
+      {
+        agentName: "No Touch PR Ariba",
+        tenantId: "knorr-bremse",
+        displayName: "Knorr Bremse",
+        logoUrl: null,
+        runs: 753,
+        trend: { pct: 12, isNew: false },
+      },
+    ];
+    return all
+      .filter((r) => category === "all" || categoryOf(r.agentName) === category)
+      .slice(0, limit);
   }
 
   const dashboard = await db();
@@ -475,50 +597,73 @@ export async function getAgentUsage(limit = 15): Promise<AgentUsageRow[]> {
     "@/lib/mongodb/collections"
   );
 
-  const { currentStart, currentEnd } = windowsForRolling7d();
+  const { currentStart, currentEnd, previousStart, previousEnd } =
+    windowsForRollingNd(windowDays);
   const startKey = dateKey(currentStart);
   const endKey = dateKey(currentEnd);
+  const prevStartKey = dateKey(previousStart);
+  const prevEndKey = dateKey(previousEnd);
 
-  const docs = await usageMetricsCol(dashboard)
-    .find({
-      date: { $gte: startKey, $lt: endKey },
-      agentRunsByName: { $exists: true },
-    })
-    .project<{ tenantId: string; agentRunsByName: Record<string, number> }>({
-      tenantId: 1,
-      agentRunsByName: 1,
-      _id: 0,
-    })
-    .toArray();
-
-  const counts = new Map<string, number>();
-  for (const doc of docs) {
-    const byName = doc.agentRunsByName ?? {};
-    for (const [agentName, runs] of Object.entries(byName)) {
-      if (!agentName) continue;
-      const key = `${doc.tenantId}::${agentName}`;
-      counts.set(key, (counts.get(key) ?? 0) + (runs as number));
+  const fetchPairs = async (
+    gte: string,
+    lt: string
+  ): Promise<Map<string, number>> => {
+    const docs = await usageMetricsCol(dashboard)
+      .find({
+        date: { $gte: gte, $lt: lt },
+        agentRunsByName: { $exists: true },
+      })
+      .project<{ tenantId: string; agentRunsByName: Record<string, number> }>({
+        tenantId: 1,
+        agentRunsByName: 1,
+        _id: 0,
+      })
+      .toArray();
+    const pairs = new Map<string, number>();
+    for (const doc of docs) {
+      const byName = doc.agentRunsByName ?? {};
+      for (const [rawName, rawRuns] of Object.entries(byName)) {
+        if (!rawName) continue;
+        const runs = Number(rawRuns) || 0;
+        if (runs <= 0) continue;
+        const agent = canonicalAgentName(rawName);
+        if (category !== "all" && categoryOf(agent) !== category) continue;
+        const key = `${agent}::${doc.tenantId}`;
+        pairs.set(key, (pairs.get(key) ?? 0) + runs);
+      }
     }
-  }
+    return pairs;
+  };
 
-  const rows = Array.from(counts.entries())
+  const [currentPairs, previousPairs] = await Promise.all([
+    fetchPairs(startKey, endKey),
+    fetchPairs(prevStartKey, prevEndKey),
+  ]);
+
+  if (!currentPairs.size) return [];
+
+  const ranked = Array.from(currentPairs.entries())
     .map(([key, runs]) => {
-      const [tenantId, agentName] = key.split("::");
-      return { tenantId, agentName, runs };
+      const [agentName, tenantId] = key.split("::");
+      return {
+        agentName,
+        tenantId,
+        runs,
+        trend: computeTrend(runs, previousPairs.get(key) ?? 0),
+      };
     })
-    .filter((r) => r.runs > 0)
-    .sort((a, b) => b.runs - a.runs)
-    .slice(0, limit);
+    .sort((a, b) => b.runs - a.runs);
 
-  if (!rows.length) return [];
+  const top = ranked.slice(0, limit);
+  if (!top.length) return [];
 
-  const tenantIds = Array.from(new Set(rows.map((r) => r.tenantId)));
+  const tenantIds = Array.from(new Set(top.map((r) => r.tenantId)));
   const tenants = await tenantsCol(dashboard)
     .find({ tenantId: { $in: tenantIds } })
     .toArray();
   const tenantMap = new Map(tenants.map((t) => [t.tenantId, t]));
 
-  return rows.map((r) => {
+  return top.map((r) => {
     const t = tenantMap.get(r.tenantId);
     return {
       agentName: r.agentName,
@@ -526,6 +671,18 @@ export async function getAgentUsage(limit = 15): Promise<AgentUsageRow[]> {
       displayName: t?.displayName ?? r.tenantId,
       logoUrl: t?.logoUrl ?? null,
       runs: r.runs,
+      trend: r.trend,
     };
   });
+}
+
+export async function getWatchedTenantCount(): Promise<number> {
+  if (USE_MOCK) return 96;
+  try {
+    const dashboard = await db();
+    const { tenantsCol } = await import("@/lib/mongodb/collections");
+    return tenantsCol(dashboard).estimatedDocumentCount();
+  } catch {
+    return 0;
+  }
 }

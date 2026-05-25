@@ -9,6 +9,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // `?backdate=N` lets us replay scoring as if today were N days ago. Used to
+  // generate a real prior rollup for the trend column without waiting for the
+  // next cron run. `N=0` (the default) is the live cron behaviour.
+  const url = new URL(req.url);
+  const backdate = Math.max(
+    0,
+    Math.min(30, parseInt(url.searchParams.get("backdate") ?? "0", 10) || 0)
+  );
+
   try {
     const { getDashboardDb } = await import("@/lib/mongodb/client");
     const { projectScoresCol } = await import("@/lib/mongodb/collections");
@@ -17,15 +26,15 @@ export async function GET(req: NextRequest) {
     );
 
     const db = await getDashboardDb();
-    const now = new Date();
     const DAY_MS = 24 * 60 * 60 * 1000;
-    const currentStart = new Date(now.getTime() - 7 * DAY_MS);
+    const endDate = new Date(Date.now() - backdate * DAY_MS);
+    const currentStart = new Date(endDate.getTime() - 7 * DAY_MS);
     const previousStart = new Date(currentStart.getTime() - 7 * DAY_MS);
 
     const projectScores = await computeProjectMomentumScores(
       db,
       currentStart,
-      now,
+      endDate,
       previousStart
     );
 
@@ -33,13 +42,21 @@ export async function GET(req: NextRequest) {
     for (const score of projectScores) {
       await projectScoresCol(db).updateOne(
         { linearProjectId: score.linearProjectId, date: score.date },
-        { $set: score },
+        // `$unset: { mock: "" }` scrubs the mock flag if we're overwriting a
+        // demo-seeded prior with real numbers - so the next `mock:clear`
+        // can't accidentally wipe a real rollup.
+        { $set: score, $unset: { mock: "" } },
         { upsert: true }
       );
       upsertedProjects++;
     }
 
-    return NextResponse.json({ ok: true, projects: upsertedProjects });
+    return NextResponse.json({
+      ok: true,
+      projects: upsertedProjects,
+      backdate,
+      date: endDate.toISOString().split("T")[0],
+    });
   } catch (error) {
     console.error("Score computation failed:", error);
     return NextResponse.json(

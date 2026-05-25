@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { KpiStrip } from "@/components/dashboard/kpi-strip";
 import { GoLiveMarquee } from "@/components/dashboard/go-live-marquee";
 import { MomentumTable } from "@/components/dashboard/momentum-table";
@@ -9,30 +10,50 @@ import {
   getProjectMomentum,
   getCustomerUsage,
   getAgentUsage,
+  getWatchedTenantCount,
 } from "@/lib/data";
 
+// Always render server-side on every request. The dashboard is internal,
+// low-traffic (one TV + a few laptops), so we'd rather see fresh numbers
+// than save a few Mongo round-trips. The KPI/trend deltas are 7-day
+// rolling windows so they don't whip around between requests anyway.
 export const dynamic = "force-dynamic";
-export const revalidate = 300;
+export const revalidate = 0;
 
 export default async function HomePage() {
-  const [kpis, goLives, momentum, customers, agents] = await Promise.all([
+  const [
+    kpis,
+    goLives,
+    momentum,
+    customers,
+    standardAgents,
+    aopAgents,
+    watchedTenantCount,
+  ] = await Promise.all([
     getKpisWithDelta(),
     getRecentGoLives(30),
-    getProjectMomentum(12),
-    getCustomerUsage(12),
-    getAgentUsage(15),
+    getProjectMomentum(15),
+    getCustomerUsage(15),
+    getAgentUsage("standardized", 15, 7),
+    getAgentUsage("aop", 15, 7),
+    getWatchedTenantCount(),
   ]);
 
   return (
     <main className="flex h-screen flex-col gap-4 overflow-hidden bg-background p-5">
-      <header className="flex items-baseline justify-between px-1">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-            askLio · Internal Pulse
+      <header className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-3">
+          <Image
+            src="/lio-logo.png"
+            alt="Lio"
+            width={56}
+            height={56}
+            priority
+            className="h-11 w-11 object-contain"
+          />
+          <h1 className="font-[family-name:var(--font-display)] text-4xl font-bold leading-none tracking-tight text-foreground">
+            Lio <span className="pulse-word">Pulse</span>
           </h1>
-          <p className="text-xs text-muted-foreground">
-            Engineering · Go-lives · Project momentum
-          </p>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
@@ -53,14 +74,26 @@ export default async function HomePage() {
         <KpiStrip kpis={kpis} />
       </section>
 
-      <section>
-        <GoLiveMarquee events={goLives} />
+      <section className="h-[320px] shrink-0">
+        <GoLiveMarquee
+          events={goLives}
+          watchedTenantCount={watchedTenantCount}
+        />
       </section>
 
-      <section className="grid min-h-0 flex-1 grid-cols-3 gap-3">
+      <section className="grid min-h-0 flex-1 grid-cols-4 gap-3">
         <MomentumTable rows={momentum} />
         <CustomerUsageTable rows={customers} />
-        <AgentUsageTable rows={agents} />
+        <AgentUsageTable
+          rows={standardAgents}
+          title="AGENTS"
+          emptyState="No agent runs this week"
+        />
+        <AgentUsageTable
+          rows={aopAgents}
+          title="AOPs"
+          emptyState="No AOP runs this week"
+        />
       </section>
     </main>
   );

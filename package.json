@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "mock:seed": "node scripts/seed-mock-data.js && node scripts/seed-mock-momentum.js",
+    "mock:seed:momentum": "node scripts/seed-mock-momentum.js",
+    "mock:clear": "node scripts/clear-mock-data.js",
+    "logos:refresh": "node scripts/refresh-tenant-logos.js"
   },
   "dependencies": {
     "@azure/storage-blob": "^12.31.0",

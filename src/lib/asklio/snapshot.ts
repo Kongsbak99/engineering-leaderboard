@@ -11,8 +11,13 @@ import {
   FEATURE_FLAG_DISPLAY_NAMES,
 } from "@/config/scoring";
 import type { GoLiveCategory } from "@/lib/mongodb/types";
-import { getLogoSasUrl } from "@/lib/azure/blob";
+import { getLogoSasUrl, resolveTenantLogoPath } from "@/lib/azure/blob";
 import { discoverTenants } from "./tenant-discovery";
+
+function tenantSlug(tenantId: string): string {
+  const stage = process.env.ASKLIO_MONGO_STAGE || "production";
+  return tenantId.replace(new RegExp(`-${stage}$`), "");
+}
 
 function humanizeTenantId(tenantId: string): string {
   const stage = process.env.ASKLIO_MONGO_STAGE || "production";
@@ -23,12 +28,15 @@ function humanizeTenantId(tenantId: string): string {
     .join(" ");
 }
 
-async function upsertTenantRecord(
-  tenantId: string,
-  logoBlobPath: string | null
-): Promise<void> {
+async function upsertTenantRecord(tenantId: string): Promise<void> {
   const dashboard = await getDashboardDb();
   const displayName = humanizeTenantId(tenantId);
+
+  // Our Azure keys only open the staging storage account, so we ignore whatever
+  // path prod Mongo points at and instead look up whichever logo file actually
+  // exists in `staging-fileupload/<slug>/common/customization/`.
+  const slug = tenantSlug(tenantId);
+  const logoBlobPath = await resolveTenantLogoPath(slug);
 
   let logoUrl: string | null = null;
   let logoUpdatedAt: Date | null = null;
@@ -73,10 +81,6 @@ async function captureTenantSnapshot(tenantId: string): Promise<SnapshotShape> {
     .collection("common")
     .findOne({ key: "tenant_config" })) as Document | null;
 
-  const customizationDoc = (await tenantDb
-    .collection("common")
-    .findOne({ key: "customization" })) as Document | null;
-
   const featureFlags =
     (tenantConfigDoc?.feature_flags as SnapshotShape["featureFlags"]) ?? {};
   const integrations =
@@ -84,12 +88,7 @@ async function captureTenantSnapshot(tenantId: string): Promise<SnapshotShape> {
   const features =
     (tenantConfigDoc?.features as Record<string, unknown>) ?? {};
 
-  const logoBlobPath =
-    (customizationDoc?.company_logo_url as string | null) ??
-    (customizationDoc?.logo_url as string | null) ??
-    null;
-
-  await upsertTenantRecord(tenantId, logoBlobPath);
+  await upsertTenantRecord(tenantId);
 
   const [activeUserCount, pendingUserCount, organisationCount, publishedAgentConfigCount] =
     await Promise.all([
@@ -164,119 +163,81 @@ async function detectGoLives(
   }[] = [];
 
   if (!previous) {
+    // First snapshot for this tenant: bootstrap baseline silently. We have no
+    // way to know which of the currently-enabled flags are "new" vs. "always
+    // been on", so emitting them as go-lives would flood the feed with noise.
+    // From the next snapshot onwards, real diffs will be detected.
+    return 0;
+  }
+
+  for (const key of FEATURE_FLAG_KEYS) {
+    const before = isTruthyFlag(previous.featureFlags[key]);
+    const after = isTruthyFlag(current.featureFlags[key]);
+    if (!before && after) {
+      events.push({
+        tenantId,
+        tenantName,
+        category: "feature_flag",
+        field: key,
+        oldValue: false,
+        newValue: true,
+        detectedAt: new Date(),
+        description: describeGoLive("feature_flag", tenantName, key),
+      });
+    }
+  }
+  for (const key of INTEGRATION_KEYS) {
+    const before = isTruthyFlag(previous.integrations[key]);
+    const after = isTruthyFlag(current.integrations[key]);
+    if (!before && after) {
+      events.push({
+        tenantId,
+        tenantName,
+        category: "integration",
+        field: `integrations.${key}`,
+        oldValue: false,
+        newValue: true,
+        detectedAt: new Date(),
+        description: describeGoLive(
+          "integration",
+          tenantName,
+          `integrations.${key}`
+        ),
+      });
+    }
+  }
+
+  const agentDelta =
+    current.publishedAgentConfigCount - previous.publishedAgentConfigCount;
+  if (agentDelta > 0) {
     events.push({
       tenantId,
       tenantName,
-      category: "tenant_created",
-      field: "tenant",
-      oldValue: null,
-      newValue: true,
+      category: "agent_config",
+      field: "published_agents",
+      oldValue: previous.publishedAgentConfigCount,
+      newValue: current.publishedAgentConfigCount,
       detectedAt: new Date(),
-      description: describeGoLive("tenant_created", tenantName, "tenant"),
+      description: `${agentDelta} new agent${agentDelta > 1 ? "s" : ""} published in ${tenantName}`,
     });
+  }
 
-    for (const key of FEATURE_FLAG_KEYS) {
-      if (isTruthyFlag(current.featureFlags[key])) {
-        events.push({
-          tenantId,
-          tenantName,
-          category: "feature_flag",
-          field: key,
-          oldValue: false,
-          newValue: true,
-          detectedAt: new Date(),
-          description: describeGoLive("feature_flag", tenantName, key),
-        });
-      }
-    }
-    for (const key of INTEGRATION_KEYS) {
-      if (isTruthyFlag(current.integrations[key])) {
-        events.push({
-          tenantId,
-          tenantName,
-          category: "integration",
-          field: `integrations.${key}`,
-          oldValue: false,
-          newValue: true,
-          detectedAt: new Date(),
-          description: describeGoLive(
-            "integration",
-            tenantName,
-            `integrations.${key}`
-          ),
-        });
-      }
-    }
-  } else {
-    for (const key of FEATURE_FLAG_KEYS) {
-      const before = isTruthyFlag(previous.featureFlags[key]);
-      const after = isTruthyFlag(current.featureFlags[key]);
-      if (!before && after) {
-        events.push({
-          tenantId,
-          tenantName,
-          category: "feature_flag",
-          field: key,
-          oldValue: false,
-          newValue: true,
-          detectedAt: new Date(),
-          description: describeGoLive("feature_flag", tenantName, key),
-        });
-      }
-    }
-    for (const key of INTEGRATION_KEYS) {
-      const before = isTruthyFlag(previous.integrations[key]);
-      const after = isTruthyFlag(current.integrations[key]);
-      if (!before && after) {
-        events.push({
-          tenantId,
-          tenantName,
-          category: "integration",
-          field: `integrations.${key}`,
-          oldValue: false,
-          newValue: true,
-          detectedAt: new Date(),
-          description: describeGoLive(
-            "integration",
-            tenantName,
-            `integrations.${key}`
-          ),
-        });
-      }
-    }
-
-    const agentDelta =
-      current.publishedAgentConfigCount - previous.publishedAgentConfigCount;
-    if (agentDelta > 0) {
-      events.push({
-        tenantId,
-        tenantName,
-        category: "agent_config",
-        field: "published_agents",
-        oldValue: previous.publishedAgentConfigCount,
-        newValue: current.publishedAgentConfigCount,
-        detectedAt: new Date(),
-        description: `${agentDelta} new agent${agentDelta > 1 ? "s" : ""} published in ${tenantName}`,
-      });
-    }
-
-    const userDelta = current.activeUserCount - previous.activeUserCount;
-    const userGrowthPct =
-      previous.activeUserCount > 0
-        ? (userDelta / previous.activeUserCount) * 100
-        : 0;
-    if (userDelta >= 5 && userGrowthPct >= 25) {
-      events.push({
-        tenantId,
-        tenantName,
-        category: "user_growth",
-        field: "active_users",
-        oldValue: previous.activeUserCount,
-        newValue: current.activeUserCount,
-        detectedAt: new Date(),
-        description: `Active users grew by ${userDelta} (${Math.round(userGrowthPct)}%) in ${tenantName}`,
-      });
-    }
+  const userDelta = current.activeUserCount - previous.activeUserCount;
+  const userGrowthPct =
+    previous.activeUserCount > 0
+      ? (userDelta / previous.activeUserCount) * 100
+      : 0;
+  if (userDelta >= 5 && userGrowthPct >= 25) {
+    events.push({
+      tenantId,
+      tenantName,
+      category: "user_growth",
+      field: "active_users",
+      oldValue: previous.activeUserCount,
+      newValue: current.activeUserCount,
+      detectedAt: new Date(),
+      description: `Active users grew by ${userDelta} (${Math.round(userGrowthPct)}%) in ${tenantName}`,
+    });
   }
 
   if (events.length) {

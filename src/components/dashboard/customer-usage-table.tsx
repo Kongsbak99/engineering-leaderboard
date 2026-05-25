@@ -1,4 +1,5 @@
 import type { CustomerUsageRow } from "@/lib/mongodb/types";
+import { TrendCell } from "./trend-cell";
 
 function initials(name: string): string {
   return name
@@ -10,13 +11,8 @@ function initials(name: string): string {
     .toUpperCase();
 }
 
-function fmtSpend(n: number): string {
-  if (n >= 1_000_000) return `€${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `€${(n / 1_000).toFixed(0)}k`;
-  return `€${n}`;
-}
-
 function fmtCount(n: number): string {
+  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}k`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return `${n}`;
 }
@@ -37,9 +33,9 @@ export function CustomerUsageTable({ rows }: { rows: CustomerUsageRow[] }) {
           <thead className="text-[10px] uppercase tracking-wider text-muted-foreground">
             <tr className="border-b border-border/50">
               <th className="py-1.5 text-left font-normal">Customer</th>
-              <th className="w-16 py-1.5 text-right font-normal">Spend</th>
               <th className="w-12 py-1.5 text-right font-normal">DAU</th>
-              <th className="w-14 py-1.5 text-right font-normal">Agents</th>
+              <th className="w-12 py-1.5 text-right font-normal normal-case">PRs</th>
+              <th className="w-16 py-1.5 text-right font-normal">Trend</th>
             </tr>
           </thead>
           <tbody>
@@ -67,14 +63,14 @@ export function CustomerUsageTable({ rows }: { rows: CustomerUsageRow[] }) {
                     </span>
                   </div>
                 </td>
-                <td className="py-2 text-right tabular-nums text-emerald-400">
-                  {fmtSpend(row.totalSpend)}
-                </td>
-                <td className="py-2 text-right tabular-nums text-muted-foreground">
+                <td className="py-2 text-right tabular-nums font-semibold text-foreground">
                   {row.activeUsers}
                 </td>
                 <td className="py-2 text-right tabular-nums text-muted-foreground">
-                  {fmtCount(row.agentRuns)}
+                  {fmtCount(row.purchaseRequests)}
+                </td>
+                <td className="py-2 text-right">
+                  <TrendCell trend={row.trend} />
                 </td>
               </tr>
             ))}

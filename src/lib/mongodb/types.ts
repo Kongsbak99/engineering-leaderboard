@@ -214,14 +214,23 @@ export interface KpiWithDelta {
   goodDirection: "up" | "down";
 }
 
+/**
+ * Trend over the last 7 days vs the previous 7 days.
+ *
+ * - `pct` is a percent change, rounded; null when the previous window is empty
+ *   AND `isNew` is true (avoids "+Infinity%" noise).
+ * - `isNew` is true when the row has activity this week but none last week.
+ */
+export interface Trend {
+  pct: number | null;
+  isNew: boolean;
+}
+
 export interface ProjectMomentumRow {
   linearProjectId: string;
   name: string;
   momentumScore: number;
-  trend: number;
-  ticketsCompleted: number;
-  prsMerged: number;
-  goLiveCount: number;
+  trend: Trend;
 }
 
 export interface CustomerUsageRow {
@@ -230,8 +239,9 @@ export interface CustomerUsageRow {
   logoUrl: string | null;
   activeUsers: number;
   totalSpend: number;
+  purchaseRequests: number;
   conversations: number;
-  agentRuns: number;
+  trend: Trend;
 }
 
 export interface AgentUsageRow {
@@ -240,6 +250,7 @@ export interface AgentUsageRow {
   displayName: string;
   logoUrl: string | null;
   runs: number;
+  trend: Trend;
 }
 
 export interface GoLiveFeed {

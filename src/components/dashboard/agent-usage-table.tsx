@@ -1,4 +1,5 @@
 import type { AgentUsageRow } from "@/lib/mongodb/types";
+import { TrendCell } from "./trend-cell";
 
 function initials(name: string): string {
   return name
@@ -11,19 +12,30 @@ function initials(name: string): string {
 }
 
 function fmtCount(n: number): string {
+  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}k`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return `${n}`;
 }
 
-export function AgentUsageTable({ rows }: { rows: AgentUsageRow[] }) {
+export function AgentUsageTable({
+  rows,
+  title,
+  emptyState = "No agent runs this window",
+  windowLabel = "rolling 7-day",
+}: {
+  rows: AgentUsageRow[];
+  title: string;
+  emptyState?: string;
+  windowLabel?: string;
+}) {
   return (
     <section className="flex h-full flex-col rounded-xl border border-border bg-card/60 p-4">
       <header className="mb-2 flex items-baseline justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">
-          Agent Usage
+        <h2 className="text-sm font-semibold tracking-wide text-foreground">
+          {title}
         </h2>
         <span className="text-[10px] text-muted-foreground">
-          rolling 7-day
+          {windowLabel}
         </span>
       </header>
       <div className="flex-1 overflow-hidden">
@@ -32,13 +44,14 @@ export function AgentUsageTable({ rows }: { rows: AgentUsageRow[] }) {
             <tr className="border-b border-border/50">
               <th className="py-1.5 text-left font-normal">Agent</th>
               <th className="py-1.5 text-left font-normal">Customer</th>
-              <th className="w-14 py-1.5 text-right font-normal">Runs</th>
+              <th className="w-12 py-1.5 text-right font-normal">Runs</th>
+              <th className="w-16 py-1.5 text-right font-normal">Trend</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => (
+            {rows.map((row) => (
               <tr
-                key={`${row.tenantId}-${row.agentName}-${i}`}
+                key={`${row.agentName}::${row.tenantId}`}
                 className="border-b border-border/30 last:border-0"
               >
                 <td className="truncate py-2 pr-2 font-medium text-foreground">
@@ -66,15 +79,18 @@ export function AgentUsageTable({ rows }: { rows: AgentUsageRow[] }) {
                 <td className="py-2 text-right tabular-nums font-semibold text-foreground">
                   {fmtCount(row.runs)}
                 </td>
+                <td className="py-2 text-right">
+                  <TrendCell trend={row.trend} />
+                </td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
                 <td
-                  colSpan={3}
+                  colSpan={4}
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
-                  No agent runs this week
+                  {emptyState}
                 </td>
               </tr>
             )}

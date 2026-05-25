@@ -32,9 +32,81 @@ function init() {
   _accountName = accountName;
 }
 
+/**
+ * Container that holds tenant assets (logos, etc.) reachable with our Azure key.
+ *
+ * Our Azure credentials are for the staging storage account. The *production*
+ * file-upload container lives on a different storage account that we do not
+ * have keys for, so we cannot read prod blob paths directly. Empirically the
+ * staging container mirrors most prod tenants' `/common/customization/` folders
+ * (just with different filenames), so we always look up logos there regardless
+ * of which Mongo stage we read tenant metadata from.
+ *
+ * Override with `ASKLIO_LOGO_CONTAINER` if you ever wire in prod blob keys.
+ */
 export function getContainerName(): string {
-  const stage = process.env.ASKLIO_MONGO_STAGE || "production";
-  return `${stage}-fileupload`;
+  return process.env.ASKLIO_LOGO_CONTAINER || "staging-fileupload";
+}
+
+const LOGO_EXTENSION_PRIORITY = [".png", ".jpg", ".jpeg", ".webp", ".svg"];
+const LOGO_EXCLUDE_HINTS = [
+  "background",
+  "favicon",
+  "icon",
+  "splash",
+  "banner",
+  "test",
+];
+
+function scoreLogoCandidate(name: string): number {
+  const base = name.toLowerCase().split("/").pop() ?? "";
+  const ext = (base.match(/\.[a-z0-9]+$/)?.[0] ?? "").toLowerCase();
+  const extRank = LOGO_EXTENSION_PRIORITY.indexOf(ext);
+  if (extRank === -1) return -1;
+
+  let score = 100 - extRank * 10;
+  if (base.includes("logo")) score += 50;
+  if (base.includes("company")) score += 20;
+  if (base.includes("brand")) score += 10;
+  for (const bad of LOGO_EXCLUDE_HINTS) {
+    if (base.includes(bad)) score -= 30;
+  }
+  // Prefer shorter filenames (less likely to be variant N).
+  score -= Math.min(base.length, 60) / 10;
+  return score;
+}
+
+/**
+ * Discover the best logo blob path for a tenant by listing
+ * `<tenantSlug>/common/customization/` in our logo container and picking the
+ * candidate whose filename most looks like a primary logo image.
+ *
+ * Returns null when the tenant has no customization folder or no image files.
+ */
+export async function resolveTenantLogoPath(
+  tenantSlug: string
+): Promise<string | null> {
+  if (!tenantSlug) return null;
+  try {
+    init();
+    if (!_serviceClient) return null;
+
+    const container = _serviceClient.getContainerClient(getContainerName());
+    const prefix = `${tenantSlug}/common/customization/`;
+    let best: { name: string; score: number } | null = null;
+    for await (const blob of container.listBlobsFlat({ prefix })) {
+      const score = scoreLogoCandidate(blob.name);
+      if (score < 0) continue;
+      if (!best || score > best.score) best = { name: blob.name, score };
+    }
+    return best?.name ?? null;
+  } catch (err) {
+    console.warn(
+      `Failed to resolve logo for ${tenantSlug}:`,
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
 }
 
 /**

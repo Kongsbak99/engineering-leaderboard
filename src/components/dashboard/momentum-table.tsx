@@ -1,16 +1,5 @@
 import type { ProjectMomentumRow } from "@/lib/mongodb/types";
-
-function trendColor(t: number) {
-  if (t > 0) return "text-emerald-400";
-  if (t < 0) return "text-rose-400";
-  return "text-muted-foreground";
-}
-
-function trendIcon(t: number) {
-  if (t > 0) return "▲";
-  if (t < 0) return "▼";
-  return "—";
-}
+import { TrendCell } from "./trend-cell";
 
 function scoreBar(score: number) {
   const pct = Math.max(0, Math.min(100, score));
@@ -41,9 +30,10 @@ export function MomentumTable({ rows }: { rows: ProjectMomentumRow[] }) {
             <tr className="border-b border-border/50">
               <th className="w-8 py-1.5 text-left font-normal">#</th>
               <th className="py-1.5 text-left font-normal">Project</th>
-              <th className="w-14 py-1.5 text-right font-normal">Tickets</th>
-              <th className="w-14 py-1.5 text-right font-normal">PRs</th>
-              <th className="w-24 py-1.5 text-right font-normal">Score</th>
+              <th className="w-24 py-1.5 text-right font-normal normal-case">
+                Lio Score
+              </th>
+              <th className="w-20 py-1.5 text-right font-normal">Trend</th>
             </tr>
           </thead>
           <tbody>
@@ -56,33 +46,23 @@ export function MomentumTable({ rows }: { rows: ProjectMomentumRow[] }) {
                 <td className="truncate py-2 font-medium text-foreground">
                   {row.name}
                 </td>
-                <td className="py-2 text-right tabular-nums text-muted-foreground">
-                  {row.ticketsCompleted}
-                </td>
-                <td className="py-2 text-right tabular-nums text-muted-foreground">
-                  {row.prsMerged}
-                </td>
                 <td className="py-2 text-right">
                   <div className="flex items-center justify-end gap-2">
                     {scoreBar(row.momentumScore)}
                     <span className="w-7 text-right tabular-nums font-semibold text-foreground">
                       {row.momentumScore}
                     </span>
-                    <span
-                      className={`w-5 text-center text-xs tabular-nums ${trendColor(
-                        row.trend
-                      )}`}
-                    >
-                      {trendIcon(row.trend)}
-                    </span>
                   </div>
+                </td>
+                <td className="py-2 text-right">
+                  <TrendCell trend={row.trend} />
                 </td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={4}
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
                   No project scores computed yet
