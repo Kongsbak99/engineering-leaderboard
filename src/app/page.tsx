@@ -4,6 +4,7 @@ import { GoLiveMarquee } from "@/components/dashboard/go-live-marquee";
 import { MomentumTable } from "@/components/dashboard/momentum-table";
 import { CustomerUsageTable } from "@/components/dashboard/customer-usage-table";
 import { AgentUsageTable } from "@/components/dashboard/agent-usage-table";
+import { ECGPulse } from "@/components/dashboard/ecg-pulse";
 import {
   getKpisWithDelta,
   getRecentGoLives,
@@ -51,8 +52,14 @@ export default async function HomePage() {
             priority
             className="h-11 w-11 object-contain"
           />
-          <h1 className="font-[family-name:var(--font-display)] text-4xl font-bold leading-none tracking-tight text-foreground">
-            Lio <span className="pulse-word">Pulse</span>
+          <h1 className="flex items-end gap-0 font-[family-name:var(--font-display)] text-4xl font-bold leading-none tracking-tight text-foreground">
+            <span>
+              Lio <span className="pulse-word">Pulse</span>
+            </span>
+            {/* `-mb-1` parks the ECG roughly halfway between the text
+                baseline and the descender — i.e. the resting line of the
+                waveform sits just under the middle of the "e". */}
+            <ECGPulse className="-mb-1" />
           </h1>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">

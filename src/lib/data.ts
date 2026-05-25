@@ -92,10 +92,10 @@ function buildKpi(
 }
 
 const MOCK_KPIS: KpiWithDelta[] = [
-  buildKpi("cycleTime", "Avg Cycle Time", "d", 4.2, 5.0, "down"),
-  buildKpi("prsMerged", "PRs Merged", "", 37, 25, "up"),
   buildKpi("activeUsers", "Active Users (avg/day)", "", 1247, 1158, "up"),
   buildKpi("goLives", "New Go-Lives", "", 7, 5, "up"),
+  buildKpi("purchaseRequests", "Purchase Requests", "", 2314, 1980, "up"),
+  buildKpi("agentRuns", "Agent Runs", "", 4821, 3950, "up"),
 ];
 
 const MOCK_GO_LIVES: GoLiveFeed[] = [
@@ -135,119 +135,71 @@ export async function getKpisWithDelta(): Promise<KpiWithDelta[]> {
   if (USE_MOCK) return MOCK_KPIS;
 
   const dashboard = await db();
-  const { linearIssuesCol, pullRequestsCol, usageMetricsCol, goLiveEventsCol } =
-    await import("@/lib/mongodb/collections");
+  const { usageMetricsCol, goLiveEventsCol } = await import(
+    "@/lib/mongodb/collections"
+  );
 
   const { currentStart, currentEnd, previousStart, previousEnd } =
     windowsForRolling7d();
+  const startKey = dateKey(currentStart);
+  const endKey = dateKey(currentEnd);
+  const prevStartKey = dateKey(previousStart);
+  const prevEndKey = dateKey(previousEnd);
 
-  const [
-    cycleCurrent,
-    cyclePrevious,
-    prsCurrent,
-    prsPrevious,
-    usageCurrent,
-    usagePrevious,
-    goLivesCurrent,
-    goLivesPrevious,
-  ] = await Promise.all([
-    linearIssuesCol(dashboard)
-      .aggregate<{ avg: number; count: number }>([
-        {
-          $match: {
-            completedAt: { $gte: currentStart, $lt: currentEnd },
-            cycleTimeHours: { $ne: null },
-          },
-        },
+  type UsageAgg = {
+    _id: null;
+    totalUsers: number;
+    days: number;
+    purchaseRequests: number;
+    agentRuns: number;
+  };
+
+  const aggForWindow = (gte: string, lt: string) =>
+    usageMetricsCol(dashboard)
+      .aggregate<UsageAgg>([
+        { $match: { date: { $gte: gte, $lt: lt } } },
         {
           $group: {
             _id: null,
-            avg: { $avg: "$cycleTimeHours" },
-            count: { $sum: 1 },
-          },
-        },
-      ])
-      .toArray(),
-    linearIssuesCol(dashboard)
-      .aggregate<{ avg: number; count: number }>([
-        {
-          $match: {
-            completedAt: { $gte: previousStart, $lt: previousEnd },
-            cycleTimeHours: { $ne: null },
+            totalUsers: { $sum: "$activeUsers" },
+            days: { $addToSet: "$date" },
+            purchaseRequests: { $sum: "$purchaseRequests" },
+            agentRuns: { $sum: "$agentRuns" },
           },
         },
         {
-          $group: {
-            _id: null,
-            avg: { $avg: "$cycleTimeHours" },
-            count: { $sum: 1 },
+          $project: {
+            _id: 1,
+            totalUsers: 1,
+            days: { $size: "$days" },
+            purchaseRequests: 1,
+            agentRuns: 1,
           },
         },
       ])
-      .toArray(),
-    pullRequestsCol(dashboard).countDocuments({
-      mergedAt: { $gte: currentStart, $lt: currentEnd },
-    }),
-    pullRequestsCol(dashboard).countDocuments({
-      mergedAt: { $gte: previousStart, $lt: previousEnd },
-    }),
-    usageMetricsCol(dashboard)
-      .aggregate<{ _id: string; totalUsers: number }>([
-        {
-          $match: {
-            date: {
-              $gte: dateKey(currentStart),
-              $lt: dateKey(currentEnd),
-            },
-          },
-        },
-        { $group: { _id: "$date", totalUsers: { $sum: "$activeUsers" } } },
-      ])
-      .toArray(),
-    usageMetricsCol(dashboard)
-      .aggregate<{ _id: string; totalUsers: number }>([
-        {
-          $match: {
-            date: {
-              $gte: dateKey(previousStart),
-              $lt: dateKey(previousEnd),
-            },
-          },
-        },
-        { $group: { _id: "$date", totalUsers: { $sum: "$activeUsers" } } },
-      ])
-      .toArray(),
-    goLiveEventsCol(dashboard).countDocuments({
-      detectedAt: { $gte: currentStart, $lt: currentEnd },
-    }),
-    goLiveEventsCol(dashboard).countDocuments({
-      detectedAt: { $gte: previousStart, $lt: previousEnd },
-    }),
-  ]);
+      .toArray();
+
+  const [currentAgg, previousAgg, goLivesCurrent, goLivesPrevious] =
+    await Promise.all([
+      aggForWindow(startKey, endKey),
+      aggForWindow(prevStartKey, prevEndKey),
+      goLiveEventsCol(dashboard).countDocuments({
+        detectedAt: { $gte: currentStart, $lt: currentEnd },
+      }),
+      goLiveEventsCol(dashboard).countDocuments({
+        detectedAt: { $gte: previousStart, $lt: previousEnd },
+      }),
+    ]);
+
+  const cur = currentAgg[0];
+  const prev = previousAgg[0];
 
   const avgUsersCurrent =
-    usageCurrent.length > 0
-      ? usageCurrent.reduce((s, d) => s + d.totalUsers, 0) / usageCurrent.length
-      : 0;
+    cur && cur.days > 0 ? cur.totalUsers / cur.days : 0;
   const avgUsersPrevious =
-    usagePrevious.length > 0
-      ? usagePrevious.reduce((s, d) => s + d.totalUsers, 0) /
-        usagePrevious.length
-      : 0;
-
-  const cycleCurrentDays = (cycleCurrent[0]?.avg ?? 0) / 24;
-  const cyclePreviousDays = (cyclePrevious[0]?.avg ?? 0) / 24;
+    prev && prev.days > 0 ? prev.totalUsers / prev.days : 0;
 
   return [
-    buildKpi(
-      "cycleTime",
-      "Avg Cycle Time",
-      "d",
-      cycleCurrentDays,
-      cyclePreviousDays,
-      "down"
-    ),
-    buildKpi("prsMerged", "PRs Merged", "", prsCurrent, prsPrevious, "up"),
     buildKpi(
       "activeUsers",
       "Active Users (avg/day)",
@@ -262,6 +214,22 @@ export async function getKpisWithDelta(): Promise<KpiWithDelta[]> {
       "",
       goLivesCurrent,
       goLivesPrevious,
+      "up"
+    ),
+    buildKpi(
+      "purchaseRequests",
+      "Purchase Requests",
+      "",
+      cur?.purchaseRequests ?? 0,
+      prev?.purchaseRequests ?? 0,
+      "up"
+    ),
+    buildKpi(
+      "agentRuns",
+      "Agent Runs",
+      "",
+      cur?.agentRuns ?? 0,
+      prev?.agentRuns ?? 0,
       "up"
     ),
   ];

@@ -203,7 +203,7 @@ export interface ProjectMapping {
 export type KpiDirection = "up" | "down" | "flat";
 
 export interface KpiWithDelta {
-  key: "cycleTime" | "prsMerged" | "activeUsers" | "goLives";
+  key: "activeUsers" | "goLives" | "purchaseRequests" | "agentRuns";
   label: string;
   unit: string;
   value: number;
