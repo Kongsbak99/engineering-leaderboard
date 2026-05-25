@@ -9,8 +9,16 @@
       "schedule": "*/15 8-18 * * 1-5"
     },
     {
-      "path": "/api/cron/scores",
+      "path": "/api/cron/tenant-snapshot",
       "schedule": "0 */2 * * *"
+    },
+    {
+      "path": "/api/cron/usage-sync",
+      "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/scores",
+      "schedule": "0 */6 * * *"
     }
   ]
 }

@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Engineering Pulse",
-  description: "Engineering leaderboard and analytics dashboard",
+  title: "askLio · Internal Pulse",
+  description: "Engineering, go-lives, and project momentum at a glance",
 };
 
 export default function RootLayout({
@@ -25,9 +25,15 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body
+        className="min-h-full bg-background text-foreground"
+        suppressHydrationWarning
+      >
+        {children}
+      </body>
     </html>
   );
 }

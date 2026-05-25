@@ -1,59 +1,67 @@
-import { Activity } from "lucide-react";
-import { HealthBanner } from "@/components/dashboard/health-banner";
-import { DeliveryLeaderboard } from "@/components/dashboard/delivery-leaderboard";
-import { CollabLeaderboard } from "@/components/dashboard/collab-leaderboard";
-import { ProjectLeaderboard } from "@/components/dashboard/project-leaderboard";
-import { TimeRangeSelector } from "@/components/dashboard/time-range-selector";
+import { KpiStrip } from "@/components/dashboard/kpi-strip";
+import { GoLiveMarquee } from "@/components/dashboard/go-live-marquee";
+import { MomentumTable } from "@/components/dashboard/momentum-table";
+import { CustomerUsageTable } from "@/components/dashboard/customer-usage-table";
+import { AgentUsageTable } from "@/components/dashboard/agent-usage-table";
 import {
-  getHealthMetrics,
-  getDeliveryLeaders,
-  getCollabLeaders,
-  getProjectMetrics,
+  getKpisWithDelta,
+  getRecentGoLives,
+  getProjectMomentum,
+  getCustomerUsage,
+  getAgentUsage,
 } from "@/lib/data";
 
-export const revalidate = 300; // ISR: revalidate every 5 min
+export const dynamic = "force-dynamic";
+export const revalidate = 300;
 
-export default async function DashboardPage() {
-  const [healthMetrics, deliveryLeaders, collabLeaders, projects] =
-    await Promise.all([
-      getHealthMetrics(),
-      getDeliveryLeaders(),
-      getCollabLeaders(),
-      getProjectMetrics(),
-    ]);
+export default async function HomePage() {
+  const [kpis, goLives, momentum, customers, agents] = await Promise.all([
+    getKpisWithDelta(),
+    getRecentGoLives(30),
+    getProjectMomentum(12),
+    getCustomerUsage(12),
+    getAgentUsage(15),
+  ]);
 
   return (
-    <div className="flex-1 flex flex-col">
-      <header className="border-b bg-card">
-        <div className="mx-auto max-w-screen-2xl px-4 py-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="rounded-lg bg-primary/10 p-2">
-                <Activity className="h-5 w-5 text-primary" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold tracking-tight">
-                  Engineering Pulse
-                </h1>
-                <p className="text-sm text-muted-foreground">
-                  Performance, collaboration &amp; project momentum
-                </p>
-              </div>
-            </div>
-            <TimeRangeSelector />
-          </div>
+    <main className="flex h-screen flex-col gap-4 overflow-hidden bg-background p-5">
+      <header className="flex items-baseline justify-between px-1">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            askLio · Internal Pulse
+          </h1>
+          <p className="text-xs text-muted-foreground">
+            Engineering · Go-lives · Project momentum
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+            Live
+          </span>
+          <span className="tabular-nums">
+            {new Date().toLocaleDateString("en-GB", {
+              weekday: "short",
+              day: "2-digit",
+              month: "short",
+            })}
+          </span>
         </div>
       </header>
 
-      <main className="flex-1 mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 lg:px-8 space-y-6">
-        <HealthBanner metrics={healthMetrics} />
+      <section>
+        <KpiStrip kpis={kpis} />
+      </section>
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <DeliveryLeaderboard engineers={deliveryLeaders} maxEntries={10} />
-          <CollabLeaderboard engineers={collabLeaders} maxEntries={10} />
-          <ProjectLeaderboard projects={projects} maxEntries={6} />
-        </div>
-      </main>
-    </div>
+      <section>
+        <GoLiveMarquee events={goLives} />
+      </section>
+
+      <section className="grid min-h-0 flex-1 grid-cols-3 gap-3">
+        <MomentumTable rows={momentum} />
+        <CustomerUsageTable rows={customers} />
+        <AgentUsageTable rows={agents} />
+      </section>
+    </main>
   );
 }
